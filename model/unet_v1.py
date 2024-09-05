@@ -40,12 +40,13 @@ class AttentionBlock(nn.Module):
     def __init__(self, channel, norm="gn", num_groups=32):
         super().__init__()
         self.norm = getNorm(norm)(num_groups, channel)
-        self.to_qkv = nn.Linear(channel, channel * 3, 1)
+        self.to_qkv = nn.Conv2d(channel, channel * 3, 1)
         self.to_out = nn.Conv2d(channel, channel, 1, 1)
+        self.channel = channel
 
     def forward(self, x):
         b, c, w, h = x.shape
-        q, k, v = torch.split(self.to_qkv(self.norm(x)), self.in_channels, dim=1)
+        q, k, v = torch.split(self.to_qkv(self.norm(x)), self.channel, dim=1)
         q = q.permute(0, 2, 3, 1).reshape(b, w * h, c)
         k = k.view(b, c, h * w)
         v = v.permute(0, 2, 3, 1).reshape(b, w * h, c)
@@ -72,7 +73,7 @@ class ResidualBlock(nn.Module):
                  ):
         super().__init__()
         self.activation = getActivation(activation)
-        self.norm_1 = getNorm(norm)(num_groups, out_channel)
+        self.norm_1 = getNorm(norm)(num_groups, in_channel)
         self.conv_1 = nn.Conv2d(in_channel, out_channel, 3, 1, 1)
 
         self.norm_2 = getNorm(norm)(num_groups, out_channel)
@@ -112,6 +113,7 @@ class UNet(nn.Module):
         self.downs = nn.ModuleList()
         self.ups = nn.ModuleList()
         current_channel = block_channel[0]
+        channels = [block_channel[0]]
         for i, channel in enumerate(block_channel[1:]):
             for _ in range(num_res_block):
                 self.downs.append(ResidualBlock(
@@ -123,8 +125,10 @@ class UNet(nn.Module):
                     num_groups[i]
                 ))
                 current_channel = channel
+                channels.append(current_channel)
             if i != len(block_channel) - 2:
                 self.downs.append(DownSampleBlock(current_channel))
+                channels.append(current_channel)
 
         self.neck = nn.ModuleList()
         for _ in range(num_neck):
@@ -136,43 +140,49 @@ class UNet(nn.Module):
                 norm,
                 num_groups[-1]
             ))
-        num_groups = list(reversed(list(map(lambda x: x * 2, num_groups)))) + [num_groups[0]]
-        for i, channel in enumerate(list(reversed(block_channel))):
-            self.ups.append(UpSampleBlock(current_channel))
-            current_channel = 2 * channel
-            for _ in range(num_res_block + 1):
+
+        num_groups = list(reversed(list(map(lambda x: x * 2, num_groups))))[:-1] + [num_groups[0]]
+        for i, channel in enumerate(list(reversed(block_channel[1:]))):
+            current_channel = channel
+            for j in range(num_res_block + 1):
+                if j == 1:
+                    channel = channel // 2
                 self.ups.append(ResidualBlock(
-                    current_channel,
+                    channels.pop() + current_channel,
                     channel,
                     drop_out,
                     activation,
                     norm,
                     num_groups[i]
                 ))
-            if i != 0:
+                current_channel = channel
+
+            if i != len(block_channel) - 2:
                 self.ups.append(UpSampleBlock(current_channel, False))
 
     def forward(self, x):
         out = self.stem(x)
-        down_outs = []
+        down_outs = [out]
 
         for block in self.downs:
-            down_outs.append(out)
             out = block(out)
+            down_outs.append(out)
 
         for block in self.neck:
             out = block(out)
 
         for block in self.ups:
-            out = torch.cat([out, down_outs.pop()], dim=1)
+            if isinstance(block, ResidualBlock):
+                out = torch.cat([out, down_outs.pop()], dim=1)
             out = block(out)
         return out
 
 
 if __name__ == '__main__':
     from torchsummary import summary
+
     model = UNet(3,
                  [18, 36, 72, 144, 288],
-                 2, 3,
-                 num_groups=[6, 12, 12, 24])
-    summary(model.cuda(), (3, 112, 112))
+                 2, 2,
+                 num_groups=[6, 6, 12, 24])
+    summary(model, (3, 112, 112), device="cpu")

@@ -11,7 +11,7 @@ from torchvision import transforms
 from matplotlib import pyplot as plt
 
 from torch.utils.data import DataLoader, Dataset
-from CMHQ_config import Config
+from dataset.CMHQ_config import CelebAMaskHQ_224x224
 
 
 class CelebAMaskHQ(Dataset):
@@ -35,7 +35,8 @@ class CelebAMaskHQ(Dataset):
     def __init__(self, transform=None, cfg=None):
         super().__init__()
         self.img_root = os.path.join(cfg.dataset_root, cfg.img_root).__str__()
-        self.mask_root = os.path.join(cfg.dataset_root, cfg.mask_root).__str__()
+        self.mask_root = os.path.join(cfg.dataset_root,
+                                      cfg.mask_root).__str__()
 
         self.imgs_path = []
         self.imgs_index = []
@@ -43,6 +44,7 @@ class CelebAMaskHQ(Dataset):
         self.transform = transform
 
         self.feas = cfg.feas
+        self.img_size = cfg.img_size
         self.fea_num = len(self.feas)
         self.cfg = cfg
         self.training = True
@@ -58,24 +60,31 @@ class CelebAMaskHQ(Dataset):
             file_len = len(filenames)
             for filename in filenames:
                 index = int(filename.split(".")[0])
-                if not os.path.exists(os.path.join(self.mask_root, f"{index:>05d}")):
+                if not os.path.exists(
+                        os.path.join(self.mask_root, f"{index:>05d}")):
                     print(f"lack of mask file for {filename}")
                 else:
                     self.imgs_path.append(filename)
                     self.imgs_index.append(f"{index:>05d}")
-            print(f"examine finished, total {file_len} files, {file_len - len(self.imgs_path)} mask files no exist")
+            print(
+                f"examine finished, total {file_len} files, {file_len - len(self.imgs_path)} mask files no exist"
+            )
 
     def __get_mask(self, img_index):
         masks = []
         for fea in self.feas:
-            if os.path.isfile(os.path.join(self.mask_root, img_index, f"{img_index}_{fea}.png")):
-                mask = cv.imread(os.path.join(self.mask_root, img_index, f"{img_index}_{fea}.png"))
+            if os.path.isfile(
+                    os.path.join(self.mask_root, img_index,
+                                 f"{img_index}_{fea}.png")):
+                mask = cv.imread(
+                    os.path.join(self.mask_root, img_index,
+                                 f"{img_index}_{fea}.png"))
                 mask = mask[:, :, 0] / 255
-                mask = torch.from_numpy(mask).unsqueeze(0)
+                mask = torch.from_numpy(mask)
                 masks.append(mask)
             else:
-                masks.append(torch.zeros(1, 112, 112))
-        return torch.stack(masks, dim=0)
+                masks.append(torch.zeros(*self.img_size))
+        return torch.stack(masks, dim=0).float()
 
     def __getitem__(self, index):
         img_path = self.imgs_path[index]
@@ -100,10 +109,11 @@ class CelebAMaskHQ(Dataset):
             std = torch.tensor([0.5, 0.5, 0.5]).view(3, 1, 1)
             img = img * std + mean
             img = img.permute(1, 2, 0).detach().numpy()
-        show_mask = np.zeros((112, 112, 3))
+        show_mask = np.zeros((*self.img_size, 3))
         for i in range(self.fea_num):
             show_mask *= (1.0 - mask[i].permute(1, 2, 0).detach().numpy())
-            show_mask += mask[i].permute(1, 2, 0).detach().numpy() * self.colors[i]
+            show_mask += mask[i].permute(1, 2,
+                                         0).detach().numpy() * self.colors[i]
         show_mask = show_mask.astype(np.uint8)
         plt.figure(figsize=(15, 5))
         subplot = plt.subplot(1, 3, 1)
@@ -121,17 +131,17 @@ class CelebAMaskHQ(Dataset):
 def get_transform():
     return transforms.Compose([
         transforms.ToTensor(),
-        transforms.RandomHorizontalFlip(),
+        # transforms.RandomHorizontalFlip(),
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])
 
 
 def get_data_loader(dataset_cfg, cfg=None):
     dataset = CelebAMaskHQ(transform=get_transform(), cfg=dataset_cfg)
-    return DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True, drop_last=True, num_workers=cfg.num_workers)
+    return DataLoader(dataset, batch_size=8, shuffle=True, drop_last=True, num_workers=8)
 
 
 if __name__ == '__main__':
-    dataset = CelebAMaskHQ(cfg=Config())
+    dataset = CelebAMaskHQ(cfg=CelebAMaskHQ_224x224())
     dataset.training = False
     dataset.show(999)
